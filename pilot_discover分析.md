@@ -1,5 +1,13 @@
 # pilot_discover分析
 
+其中 Server 为 pilot-discovery 的主服务，包含了三个比较重要的组件：
+
+- Config Controller：从不同来源接收流量控制和路由规则等 Istio 的配置，并响应各类事件。•Service Controller：从不同注册中心同步服务及实例，并响应各类事件。•EnvoyXdsServer：核心的 xDS 协议推送服务，根据上面组件的数据生成 xDS 协议并下发。
+
+- Config Controller 比较核心的就是对接 Kubernetes，从 kube-apiserver 中 Watch 集群中的 VirtualService、ServiceEntry、DestinationRules 等配置信息，有变化则生成 PushRequest 推送至 EnvoyXdsServer 中的推送队列。除此之外，还支持对接 MCP(Mesh Configuration Protocol) 协议的 gRPC Server，如 Nacos 的 MCP 服务等，只需要在 meshconfig 中配置 configSources 即可。最后一种是基于内存的 Config Controller 实现，通过 Watch 一个文件目录，加载目录中的 yaml 文件生成配置数据，主要用来测试。
+
+- Service Controller 目前原生支持 Kubernetes 和 Consul，注册在这些注册中心中的服务可以无痛接入 Mesh，另外一种比较特殊，就是 ServiceEntryStore，它本质是储存在 Config Controller 中的 Istio 配置数据，但它描述的却是集群外部的服务信息，详情可阅读文档 ServiceEntry[2]，Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
+
 ## 主程序
 ```diff
 func main() {
@@ -97,6 +105,20 @@ func newDiscoveryCommand() *cobra.Command {
 
 - bootstrap.NewServer
 ```diff
+type Server struct {
+  XDSServer *xds.DiscoveryServer  // Xds 服务
+  environment *model.Environment  // Pilot 环境所需的 API 集合
+  kubeClient kubelib.Client // kube的几种clients: restclient,clientset,dynamicclient,discoverclient
+  kubeRegistry *kubecontroller.Controller   // 处理 Kubernetes 主集群的注册中心
+  multicluster *kubecontroller.Multicluster // 处理 Kubernetes 多个集群的注册中心
+  configController  model.ConfigStoreCache  // 统一处理配置数据（如 VirtualService 等) 的 Controller
+  ConfigStores      []model.ConfigStoreCache // 不同配置信息的缓存器，提供 Get、List、Create 等方法
+  serviceEntryStore *serviceentry.ServiceEntryStore // 单独处理 ServiceEntry 的 Controller
+  fileWatcher filewatcher.FileWatcher // 文件监听器，主要 watch meshconfig 和 networks 配置文件等
+  startFuncs []startFunc // 保存了上述所有服务的启动函数，便于在 Start() 方法中批量启动及管理
+...
+}
+
 // NewServer creates a new Server instance based on the provided arguments.
 func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 	e := &model.Environment{
