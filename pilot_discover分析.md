@@ -298,3 +298,197 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 	return s, nil
 }
 ```
+
+Environment
+
+```diff
+// Environment provides an aggregate environmental API for Pilot
+type Environment struct {
+	// Discovery interface for listing services and instances.
+	ServiceDiscovery
+
+	// Config interface for listing routing rules
+	IstioConfigStore
+
+	// Watcher is the watcher for the mesh config (to be merged into the config store)
+	mesh.Watcher
+
+	// NetworksWatcher (loaded from a config map) provides information about the
+	// set of networks inside a mesh and how to route to endpoints in each
+	// network. Each network provides information about the endpoints in a
+	// routable L3 network. A single routable L3 network can have one or more
+	// service registries.
+	mesh.NetworksWatcher
+
+	NetworkManager *NetworkManager
+
+	// PushContext holds information during push generation. It is reset on config change, at the beginning
+	// of the pushAll. It will hold all errors and stats and possibly caches needed during the entire cache computation.
+	// DO NOT USE EXCEPT FOR TESTS AND HANDLING OF NEW CONNECTIONS.
+	// ALL USE DURING A PUSH SHOULD USE THE ONE CREATED AT THE
+	// START OF THE PUSH, THE GLOBAL ONE MAY CHANGE AND REFLECT A DIFFERENT
+	// CONFIG AND PUSH
+	PushContext *PushContext
+
+	// DomainSuffix provides a default domain for the Istio server.
+	DomainSuffix string
+
+	ledger ledger.Ledger
+
+	// TrustBundle: List of Mesh TrustAnchors
+	TrustBundle *trustbundle.TrustBundle
+
+	clusterLocalServices ClusterLocalProvider
+
+	GatewayAPIController GatewayController
+}
+
+// ServiceDiscovery enumerates Istio service instances.
+// nolint: lll
+type ServiceDiscovery interface {
+	NetworkGatewaysWatcher
+
+	// Services list declarations of all services in the system
+	Services() ([]*Service, error)
+
+	// GetService retrieves a service by host name if it exists
+	GetService(hostname host.Name) *Service
+
+	// InstancesByPort retrieves instances for a service on the given ports with labels that match
+	// any of the supplied labels. All instances match an empty tag list.
+	//
+	// For example, consider an example of catalog.mystore.com:
+	// Instances(catalog.myservice.com, 80) ->
+	//      --> IstioEndpoint(172.16.0.1:8888), Service(catalog.myservice.com), Labels(foo=bar)
+	//      --> IstioEndpoint(172.16.0.2:8888), Service(catalog.myservice.com), Labels(foo=bar)
+	//      --> IstioEndpoint(172.16.0.3:8888), Service(catalog.myservice.com), Labels(kitty=cat)
+	//      --> IstioEndpoint(172.16.0.4:8888), Service(catalog.myservice.com), Labels(kitty=cat)
+	//
+	// Calling Instances with specific labels returns a trimmed list.
+	// e.g., Instances(catalog.myservice.com, 80, foo=bar) ->
+	//      --> IstioEndpoint(172.16.0.1:8888), Service(catalog.myservice.com), Labels(foo=bar)
+	//      --> IstioEndpoint(172.16.0.2:8888), Service(catalog.myservice.com), Labels(foo=bar)
+	//
+	// Similar concepts apply for calling this function with a specific
+	// port, hostname and labels.
+	//
+	// Introduced in Istio 0.8. It is only called with 1 port.
+	// CDS (clusters.go) calls it for building 'dnslb' type clusters.
+	// EDS calls it for building the endpoints result.
+	// Consult istio-dev before using this for anything else (except debugging/tools)
+	InstancesByPort(svc *Service, servicePort int, labels labels.Collection) []*ServiceInstance
+
+	// GetProxyServiceInstances returns the service instances that co-located with a given Proxy
+	//
+	// Co-located generally means running in the same network namespace and security context.
+	//
+	// A Proxy operating as a Sidecar will return a non-empty slice.  A stand-alone Proxy
+	// will return an empty slice.
+	//
+	// There are two reasons why this returns multiple ServiceInstances instead of one:
+	// - A ServiceInstance has a single IstioEndpoint which has a single Port.  But a Service
+	//   may have many ports.  So a workload implementing such a Service would need
+	//   multiple ServiceInstances, one for each port.
+	// - A single workload may implement multiple logical Services.
+	//
+	// In the second case, multiple services may be implemented by the same physical port number,
+	// though with a different ServicePort and IstioEndpoint for each.  If any of these overlapping
+	// services are not HTTP or H2-based, behavior is undefined, since the listener may not be able to
+	// determine the intended destination of a connection without a Host header on the request.
+	GetProxyServiceInstances(*Proxy) []*ServiceInstance
+
+	GetProxyWorkloadLabels(*Proxy) labels.Collection
+
+	// GetIstioServiceAccounts returns a list of service accounts looked up from
+	// the specified service hostname and ports.
+	// Deprecated - service account tracking moved to XdsServer, incremental.
+	GetIstioServiceAccounts(svc *Service, ports []int) []string
+
+	// MCSServices returns information about the services that have been exported/imported via the
+	// Kubernetes Multi-Cluster Services (MCS) ServiceExport API. Only applies to services in
+	// Kubernetes clusters.
+	MCSServices() []MCSServiceInfo
+}
+
++ // IstioConfigStore是支持存取Istio配置信息的接口
+// IstioConfigStore is a specialized interface to access config store using
+// Istio configuration types
+type IstioConfigStore interface {
+	ConfigStore
+
+	// ServiceEntries lists all service entries
+	ServiceEntries() []config.Config
+
+	// Gateways lists all gateways bound to the specified workload labels
+	Gateways(workloadLabels labels.Collection) []config.Config
+
+	// AuthorizationPolicies selects AuthorizationPolicies in the specified namespace.
+	AuthorizationPolicies(namespace string) []config.Config
+}
+
++ // ConfigStore是一套平台无关的APIs，用来支持存取配置信息
+// ConfigStore describes a set of platform agnostic APIs that must be supported
+// by the underlying platform to store and retrieve Istio configuration.
+//
+// Configuration key is defined to be a combination of the type, name, and
+// namespace of the configuration object. The configuration key is guaranteed
+// to be unique in the store.
+//
+// The storage interface presented here assumes that the underlying storage
+// layer supports _Get_ (list), _Update_ (update), _Create_ (create) and
+// _Delete_ semantics but does not guarantee any transactional semantics.
+//
+// _Update_, _Create_, and _Delete_ are mutator operations. These operations
+// are asynchronous, and you might not see the effect immediately (e.g. _Get_
+// might not return the object by key immediately after you mutate the store.)
+// Intermittent errors might occur even though the operation succeeds, so you
+// should always check if the object store has been modified even if the
+// mutating operation returns an error.  Objects should be created with
+// _Create_ operation and updated with _Update_ operation.
+//
+// Resource versions record the last mutation operation on each object. If a
+// mutation is applied to a different revision of an object than what the
+// underlying storage expects as defined by pure equality, the operation is
+// blocked.  The client of this interface should not make assumptions about the
+// structure or ordering of the revision identifier.
+//
+// Object references supplied and returned from this interface should be
+// treated as read-only. Modifying them violates thread-safety.
+type ConfigStore interface {
+	// Schemas exposes the configuration type schema known by the config store.
+	// The type schema defines the bidirectional mapping between configuration
+	// types and the protobuf encoding schema.
+	Schemas() collection.Schemas
+
+	// Get retrieves a configuration element by a type and a key
+	Get(typ config.GroupVersionKind, name, namespace string) *config.Config
+
+	// List returns objects by type and namespace.
+	// Use "" for the namespace to list across namespaces.
+	List(typ config.GroupVersionKind, namespace string) ([]config.Config, error)
+
+	// Create adds a new configuration object to the store. If an object with the
+	// same name and namespace for the type already exists, the operation fails
+	// with no side effects.
+	Create(config config.Config) (revision string, err error)
+
+	// Update modifies an existing configuration object in the store.  Update
+	// requires that the object has been created.  Resource version prevents
+	// overriding a value that has been changed between prior _Get_ and _Put_
+	// operation to achieve optimistic concurrency. This method returns a new
+	// revision if the operation succeeds.
+	Update(config config.Config) (newRevision string, err error)
+
+	UpdateStatus(config config.Config) (newRevision string, err error)
+
+	// Patch applies only the modifications made in the PatchFunc rather than doing a full replace. Useful to avoid
+	// read-modify-write conflicts when there are many concurrent-writers to the same resource.
+	Patch(orig config.Config, patchFn config.PatchFunc) (string, error)
+
+	// Delete removes an object from the store by key
+	// For k8s, resourceVersion must be fulfilled before a deletion is carried out.
+	// If not possible, a 409 Conflict status will be returned.
+	Delete(typ config.GroupVersionKind, name, namespace string, resourceVersion *string) error
+}
+
+```
