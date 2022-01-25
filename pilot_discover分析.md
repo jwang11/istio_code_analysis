@@ -105,7 +105,10 @@ func newDiscoveryCommand() *cobra.Command {
 		},
 ```
 
-- bootstrap.NewServer
+- bootstrap.NewServer初始化
+
+![Pilot Discovery初始化](pilot_discover_init.png)
+
 ```diff
 type Server struct {
   XDSServer *xds.DiscoveryServer  // Xds 服务
