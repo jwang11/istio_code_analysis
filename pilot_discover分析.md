@@ -168,10 +168,13 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 	// used for both initKubeRegistry and initClusterRegistries
 	args.RegistryOptions.KubeOptions.EndpointMode = kubecontroller.DetectEndpointMode(s.kubeClient)
 
++	// initMeshConfiguration和initMeshNetworks是通过fileWatcher对istiod从configmap中
++	// 挂载的两个配置文件mesh和meshNetworks进行监听。当配置文件发生变化时重载配置并触发相应的Handlers 
 	s.initMeshConfiguration(args, s.fileWatcher)
 	spiffe.SetTrustDomain(s.environment.Mesh().GetTrustDomain())
 
 	s.initMeshNetworks(args, s.fileWatcher)
++	// initMeshHandlers为上述两个配置文件注册了两个Handler，当配置文件发生变化时触发全量xDS下发	
 	s.initMeshHandlers()
 	s.environment.Init()
 
