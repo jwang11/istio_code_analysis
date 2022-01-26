@@ -156,6 +156,7 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 	}
 	// Initialize workload Trust Bundle before XDS Server
 	e.TrustBundle = s.workloadTrustBundle
++	// 创建DiscoverServer，xDS的gRPC下发服务	
 	s.XDSServer = xds.NewDiscoveryServer(e, args.Plugins, args.PodName, args.Namespace, args.RegistryOptions.KubeOptions.ClusterAliases)
 
 	prometheus.EnableHandlingTimeHistogram()
@@ -195,6 +196,7 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 		return nil, err
 	}
 
++	// 初始化了三种控制器分别处理证书、配置信息和注册信息，证书及安全相关的内容
 	if err := s.initControllers(args); err != nil {
 		return nil, err
 	}
@@ -579,5 +581,221 @@ func NewDiscoveryServer(env *model.Environment, plugins []string, instanceID str
 	out.ConfigGenerator = core.NewConfigGenerator(plugins, out.Cache)
 
 	return out
+}
+```
+- 初始化MeshConfig、 KubeClient、MeshNetworks和MeshHandlers
+```diff
+// initKubeClient creates the k8s client if running in an k8s environment.
+// This is determined by the presence of a kube registry, which
+// uses in-context k8s, or a config source of type k8s.
+func (s *Server) initKubeClient(args *PilotArgs) error {
+	if s.kubeClient != nil {
+		// Already initialized by startup arguments
+		return nil
+	}
+	hasK8SConfigStore := false
+	if args.RegistryOptions.FileDir == "" {
+		// If file dir is set - config controller will just use file.
+		if _, err := os.Stat(args.MeshConfigFile); !os.IsNotExist(err) {
+			meshConfig, err := mesh.ReadMeshConfig(args.MeshConfigFile)
+			if err != nil {
+				return fmt.Errorf("failed reading mesh config: %v", err)
+			}
+			if len(meshConfig.ConfigSources) == 0 && args.RegistryOptions.KubeConfig != "" {
+				hasK8SConfigStore = true
+			}
+			for _, cs := range meshConfig.ConfigSources {
+				if cs.Address == string(Kubernetes)+"://" {
+					hasK8SConfigStore = true
+					break
+				}
+			}
+		} else if args.RegistryOptions.KubeConfig != "" {
+			hasK8SConfigStore = true
+		}
+	}
+
+	if hasK8SConfigStore || hasKubeRegistry(args.RegistryOptions.Registries) {
+		// Used by validation
+		kubeRestConfig, err := kubelib.DefaultRestConfig(args.RegistryOptions.KubeConfig, "", func(config *rest.Config) {
+			config.QPS = args.RegistryOptions.KubeOptions.KubernetesAPIQPS
+			config.Burst = args.RegistryOptions.KubeOptions.KubernetesAPIBurst
+		})
+		if err != nil {
+			return fmt.Errorf("failed creating kube config: %v", err)
+		}
+
+		s.kubeClient, err = kubelib.NewClient(kubelib.NewClientConfigForRestConfig(kubeRestConfig))
+		if err != nil {
+			return fmt.Errorf("failed creating kube client: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// initMeshConfiguration creates the mesh in the pilotConfig from the input arguments.
+// Original/default behavior:
+// - use the mounted file, if it exists.
+// - use istio-REVISION if k8s is enabled
+// - fallback to default
+//
+// If the 'SHARED_MESH_CONFIG' env is set (experimental feature in 1.10):
+// - if a file exist, load it - will be merged
+// - if istio-REVISION exists, will be used, even if the file is present.
+// - the SHARED_MESH_CONFIG config map will also be loaded and merged.
+func (s *Server) initMeshConfiguration(args *PilotArgs, fileWatcher filewatcher.FileWatcher) {
+	log.Info("initializing mesh configuration ", args.MeshConfigFile)
+	defer func() {
+		if s.environment.Watcher != nil {
+			log.Infof("mesh configuration: %s", mesh.PrettyFormatOfMeshConfig(s.environment.Mesh()))
+			log.Infof("version: %s", version.Info.String())
+			argsdump, _ := json.MarshalIndent(args, "", "   ")
+			log.Infof("flags: %s", argsdump)
+		}
+	}()
+
+	// Watcher will be merging more than one mesh config source?
+	multiWatch := features.SharedMeshConfig != ""
+
+	var err error
+	if _, err = os.Stat(args.MeshConfigFile); !os.IsNotExist(err) {
+		s.environment.Watcher, err = mesh.NewFileWatcher(fileWatcher, args.MeshConfigFile, multiWatch)
+		if err == nil {
+			if multiWatch {
+				kubemesh.AddUserMeshConfig(
+					s.kubeClient, s.environment.Watcher, args.Namespace, configMapKey, features.SharedMeshConfig, s.internalStop)
+			} else {
+				// Normal install no longer uses this mode - testing and special installs still use this.
+				log.Warnf("Using local mesh config file %s, in cluster configs ignored", args.MeshConfigFile)
+			}
+			return
+		}
+	}
+
+	// Config file either didn't exist or failed to load.
+	if s.kubeClient == nil {
+		// Use a default mesh.
+		meshConfig := mesh.DefaultMeshConfig()
+		s.environment.Watcher = mesh.NewFixedWatcher(&meshConfig)
+		log.Warnf("Using default mesh - missing file %s and no k8s client", args.MeshConfigFile)
+		return
+	}
+
+	// Watch the istio ConfigMap for mesh config changes.
+	// This may be necessary for external Istiod.
+	configMapName := getMeshConfigMapName(args.Revision)
+	s.environment.Watcher = kubemesh.NewConfigMapWatcher(
+		s.kubeClient, args.Namespace, configMapName, configMapKey, multiWatch, s.internalStop)
+
+	if multiWatch {
+		kubemesh.AddUserMeshConfig(s.kubeClient, s.environment.Watcher, args.Namespace, configMapKey, features.SharedMeshConfig, s.internalStop)
+	}
+}
+
+// initMeshNetworks loads the mesh networks configuration from the file provided
+// in the args and add a watcher for changes in this file.
+func (s *Server) initMeshNetworks(args *PilotArgs, fileWatcher filewatcher.FileWatcher) {
+	if mw, ok := s.environment.Watcher.(mesh.NetworksWatcher); ok {
+		// The mesh config watcher is also a NetworksWatcher, this is common for reading ConfigMap
+		// directly from Kubernetes
+		log.Infof("initializing mesh networks from mesh config watcher")
+		s.environment.NetworksWatcher = mw
+		return
+	}
+	log.Info("initializing mesh networks")
+	if args.NetworksConfigFile != "" {
+		var err error
+		s.environment.NetworksWatcher, err = mesh.NewNetworksWatcher(fileWatcher, args.NetworksConfigFile)
+		if err != nil {
+			log.Info(err)
+		}
+	}
+
+	if s.environment.NetworksWatcher == nil {
+		log.Info("mesh networks configuration not provided")
+		s.environment.NetworksWatcher = mesh.NewFixedNetworksWatcher(nil)
+	}
+}
+
+// initMeshHandlers initializes mesh and network handlers.
+func (s *Server) initMeshHandlers() {
+	log.Info("initializing mesh handlers")
+	// When the mesh config or networks change, do a full push.
+	s.environment.AddMeshHandler(func() {
+		spiffe.SetTrustDomain(s.environment.Mesh().GetTrustDomain())
+		s.XDSServer.ConfigGenerator.MeshConfigChanged(s.environment.Mesh())
+		s.XDSServer.ConfigUpdate(&model.PushRequest{
+			Full:   true,
+			Reason: []model.TriggerReason{model.GlobalUpdate},
+		})
+	})
+	s.environment.AddNetworksHandler(func() {
+		s.XDSServer.ConfigUpdate(&model.PushRequest{
+			Full:   true,
+			Reason: []model.TriggerReason{model.NetworksTrigger},
+		})
+	})
+}
+
+// initServiceControllers creates and initializes the service controllers
+func (s *Server) initServiceControllers(args *PilotArgs) error {
+	serviceControllers := s.ServiceController()
+
+	s.serviceEntryStore = serviceentry.NewServiceDiscovery(
+		s.configController, s.environment.IstioConfigStore, s.XDSServer,
+		serviceentry.WithClusterID(s.clusterID),
+	)
+	serviceControllers.AddRegistry(s.serviceEntryStore)
+
+	registered := make(map[provider.ID]bool)
+	for _, r := range args.RegistryOptions.Registries {
+		serviceRegistry := provider.ID(r)
+		if _, exists := registered[serviceRegistry]; exists {
+			log.Warnf("%s registry specified multiple times.", r)
+			continue
+		}
+		registered[serviceRegistry] = true
+		log.Infof("Adding %s registry adapter", serviceRegistry)
+		switch serviceRegistry {
+		case provider.Kubernetes:
+			if err := s.initKubeRegistry(args); err != nil {
+				return err
+			}
+		case provider.Mock:
+			s.initMockRegistry()
+		default:
+			return fmt.Errorf("service registry %s is not supported", r)
+		}
+	}
+
+	// Defer running of the service controllers.
+	s.addStartFunc(func(stop <-chan struct{}) error {
+		go serviceControllers.Run(stop)
+		return nil
+	})
+
+	return nil
+}
+```
+
+- 初始化Controller
+```diff
+// initControllers initializes the controllers.
+func (s *Server) initControllers(args *PilotArgs) error {
+	log.Info("initializing controllers")
+	s.initMulticluster(args)
+	// Certificate controller is created before MCP controller in case MCP server pod
+	// waits to mount a certificate to be provisioned by the certificate controller.
+	if err := s.initCertController(args); err != nil {
+		return fmt.Errorf("error initializing certificate controller: %v", err)
+	}
+	if err := s.initConfigController(args); err != nil {
+		return fmt.Errorf("error initializing config controller: %v", err)
+	}
+	if err := s.initServiceControllers(args); err != nil {
+		return fmt.Errorf("error initializing service controllers: %v", err)
+	}
+	return nil
 }
 ```
