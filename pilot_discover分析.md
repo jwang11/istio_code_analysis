@@ -490,5 +490,46 @@ type ConfigStore interface {
 	// If not possible, a 409 Conflict status will be returned.
 	Delete(typ config.GroupVersionKind, name, namespace string, resourceVersion *string) error
 }
-
 ```
+
+ mesh.Watcher和mesh.NetworksWatcher负责监听istiod启动时挂载的两个配置文件，这两个配置文件是通过configmap映射到Pod的文件系统中的，监听器将在监听到配置文件变化时运行预先注册的Handler。
+ 
+
+ ```diff
+ + // 文件挂载参考istiod的配置文件
+ apiVersion: v1
+kind: Pod
+metadata:
+  name: istiod-56c488887d-z9k5c
+  namespace: istio-system
+spec:
+  containers:
+    volumeMounts:
+    - mountPath: /etc/istio/config
+      name: config-volume
+  volumes:
+  - configMap:
+      defaultMode: 420
+      name: istio
+    name: config-volume
+```
+
+```diff
++ // 配置存储在istio-system/istio这个configmap中，里面保存了mesh和meshNetworks两种配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio
+  namespace: istio-system
+data:
+  mesh: |-
+    accessLogEncoding: TEXT
+    accessLogFile: ""
+    accessLogFormat: ""
+    defaultConfig:
+      binaryPath: /usr/local/bin/mosn
+      concurrency: 2
+      configPath: ./etc/istio/proxy
+    ...
+  meshNetworks: 'networks: {}'
+  ```
