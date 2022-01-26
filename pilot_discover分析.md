@@ -533,3 +533,46 @@ data:
     ...
   meshNetworks: 'networks: {}'
   ```
+- s.XDSServer = xds.NewDiscoveryServer(...)
+```diff
+// NewDiscoveryServer creates DiscoveryServer that sources data from Pilot's internal mesh data structures
+func NewDiscoveryServer(env *model.Environment, plugins []string, instanceID string, systemNameSpace string,
+	clusterAliases map[string]string) *DiscoveryServer {
+	out := &DiscoveryServer{
+		Env:                     env,
+		Generators:              map[string]model.XdsResourceGenerator{},
+		ProxyNeedsPush:          DefaultProxyNeedsPush,
+		EndpointShardsByService: map[string]map[string]*EndpointShards{},
+		concurrentPushLimit:     make(chan struct{}, features.PushThrottle),
+		requestRateLimit:        rate.NewLimiter(rate.Limit(features.RequestLimit), 1),
+		InboundUpdates:          atomic.NewInt64(0),
+		CommittedUpdates:        atomic.NewInt64(0),
+		pushChannel:             make(chan *model.PushRequest, 10),
+		pushQueue:               NewPushQueue(),
+		debugHandlers:           map[string]string{},
+		adsClients:              map[string]*Connection{},
+		debounceOptions: debounceOptions{
+			debounceAfter:     features.DebounceAfter,
+			debounceMax:       features.DebounceMax,
+			enableEDSDebounce: features.EnableEDSDebounce,
+		},
+		Cache:      model.DisabledCache{},
+		instanceID: instanceID,
+	}
+
+	out.ClusterAliases = make(map[cluster.ID]cluster.ID)
+	for alias := range clusterAliases {
+		out.ClusterAliases[cluster.ID(alias)] = cluster.ID(clusterAliases[alias])
+	}
+
+	out.initJwksResolver()
+
+	if features.EnableXDSCaching {
+		out.Cache = model.NewXdsCache()
+	}
+
+	out.ConfigGenerator = core.NewConfigGenerator(plugins, out.Cache)
+
+	return out
+}
+```
