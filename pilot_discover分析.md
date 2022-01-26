@@ -534,6 +534,8 @@ data:
   meshNetworks: 'networks: {}'
   ```
 - s.XDSServer = xds.NewDiscoveryServer(...)
+
+该服务为Envoy xDS APIs的gRPC实现
 ```diff
 // NewDiscoveryServer creates DiscoveryServer that sources data from Pilot's internal mesh data structures
 func NewDiscoveryServer(env *model.Environment, plugins []string, instanceID string, systemNameSpace string,
