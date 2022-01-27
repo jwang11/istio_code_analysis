@@ -799,3 +799,155 @@ func (s *Server) initControllers(args *PilotArgs) error {
 	return nil
 }
 ```
+
+- 初始化ConfigController
+
+配置信息大都是 Istio 定义的一系列 CRD（如 VirtualService 、 DestinationRules 等），一个控制面可以通过 MCP 同时接入多个 Kubernetes 之外的配置数据源，也可通过文件目录（主要用来调试）挂载，默认是读取 Kubernetes 中的配置数据：
+
+```diff
+// initConfigController creates the config controller in the pilotConfig.
+func (s *Server) initConfigController(args *PilotArgs) error {
+	s.initStatusController(args, features.EnableStatus)
+	meshConfig := s.environment.Mesh()
+	if len(meshConfig.ConfigSources) > 0 {
+		// Using MCP for config.
+		s.initConfigSources(args)
+	} else if args.RegistryOptions.FileDir != "" {
+		// Local files - should be added even if other options are specified
+		store := memory.Make(collections.Pilot)
+		configController := memory.NewController(store)
+
+		err := s.makeFileMonitor(args.RegistryOptions.FileDir, args.RegistryOptions.KubeOptions.DomainSuffix, configController)
+		s.ConfigStores = append(s.ConfigStores, configController)
+	} else {
++		// K8S里config信息	
+		err2 := s.initK8SConfigStore(args)
+	}
+
+	// If running in ingress mode (requires k8s), wrap the config controller.
+	if hasKubeRegistry(args.RegistryOptions.Registries) && meshConfig.IngressControllerMode != meshconfig.MeshConfig_OFF {
+		// Wrap the config controller with a cache.
+		// Supporting only Ingress/v1 means we lose support of Kubernetes 1.18
+		// Supporting only Ingress/v1beta1 means we lose support of Kubernetes 1.22
+		// Since supporting both in a monolith controller is painful due to lack of usable conversion logic between
+		// the two versions.
+		// As a compromise, we instead just fork the controller. Once 1.18 support is no longer needed, we can drop the old controller
+		ingressV1 := ingress.V1Available(s.kubeClient)
+		if ingressV1 {
+			s.ConfigStores = append(s.ConfigStores,
+				ingressv1.NewController(s.kubeClient, s.environment.Watcher, args.RegistryOptions.KubeOptions))
+		} else {
+			s.ConfigStores = append(s.ConfigStores,
+				ingress.NewController(s.kubeClient, s.environment.Watcher, args.RegistryOptions.KubeOptions))
+		}
+
+		s.addTerminatingStartFunc(func(stop <-chan struct{}) error {
+			leaderelection.
+				NewLeaderElection(args.Namespace, args.PodName, leaderelection.IngressController, args.Revision, s.kubeClient).
+				AddRunFunction(func(leaderStop <-chan struct{}) {
+					if ingressV1 {
+						ingressSyncer := ingressv1.NewStatusSyncer(s.environment.Watcher, s.kubeClient)
+						// Start informers again. This fixes the case where informers for namespace do not start,
+						// as we create them only after acquiring the leader lock
+						// Note: stop here should be the overall pilot stop, NOT the leader election stop. We are
+						// basically lazy loading the informer, if we stop it when we lose the lock we will never
+						// recreate it again.
+						s.kubeClient.RunAndWait(stop)
+						log.Infof("Starting ingress controller")
+						ingressSyncer.Run(leaderStop)
+					} else {
+						ingressSyncer := ingress.NewStatusSyncer(s.environment.Watcher, s.kubeClient)
+						// Start informers again. This fixes the case where informers for namespace do not start,
+						// as we create them only after acquiring the leader lock
+						// Note: stop here should be the overall pilot stop, NOT the leader election stop. We are
+						// basically lazy loading the informer, if we stop it when we lose the lock we will never
+						// recreate it again.
+						s.kubeClient.RunAndWait(stop)
+						log.Infof("Starting ingress controller")
+						ingressSyncer.Run(leaderStop)
+					}
+				}).
+				Run(stop)
+			return nil
+		})
+	}
+
+	// Wrap the config controller with a cache.
+	aggregateConfigController, err := configaggregate.MakeCache(s.ConfigStores)
+
+	s.configController = aggregateConfigController
+
+	// Create the config store.
+	s.environment.IstioConfigStore = model.MakeIstioStore(s.configController)
+
+	// Defer starting the controller until after the service is created.
+	s.addStartFunc(func(stop <-chan struct{}) error {
+		go s.configController.Run(stop)
+		return nil
+	})
+	return nil
+}
+
+func (s *Server) initK8SConfigStore(args *PilotArgs) error {
+	if s.kubeClient == nil {
+		return nil
+	}
+	configController, err := s.makeKubeConfigController(args)
+	s.ConfigStores = append(s.ConfigStores, configController)
+	if features.EnableGatewayAPI {
+		if s.statusManager == nil && features.EnableGatewayAPIStatus {
+			s.initStatusManager(args)
+		}
+		gwc := gateway.NewController(s.kubeClient, configController, args.RegistryOptions.KubeOptions)
+		s.environment.GatewayAPIController = gwc
+		s.ConfigStores = append(s.ConfigStores, s.environment.GatewayAPIController)
+		s.addTerminatingStartFunc(func(stop <-chan struct{}) error {
+			leaderelection.
+				NewLeaderElection(args.Namespace, args.PodName, leaderelection.GatewayStatusController, args.Revision, s.kubeClient).
+				AddRunFunction(func(leaderStop <-chan struct{}) {
+					log.Infof("Starting gateway status writer")
+					gwc.SetStatusWrite(true, s.statusManager)
+
+					// Trigger a push so we can recompute status
+					s.XDSServer.ConfigUpdate(&model.PushRequest{
+						Full:   true,
+						Reason: []model.TriggerReason{model.GlobalUpdate},
+					})
+					<-leaderStop
+					log.Infof("Stopping gateway status writer")
+					gwc.SetStatusWrite(false, nil)
+				}).
+				Run(stop)
+			return nil
+		})
+		if features.EnableGatewayAPIDeploymentController {
+			s.addTerminatingStartFunc(func(stop <-chan struct{}) error {
+				leaderelection.
+					NewLeaderElection(args.Namespace, args.PodName, leaderelection.GatewayDeploymentController, args.Revision, s.kubeClient).
+					AddRunFunction(func(leaderStop <-chan struct{}) {
+						// We can only run this if the Gateway CRD is created
+						if crdclient.WaitForCRD(gvk.KubernetesGateway, leaderStop) {
+							controller := gateway.NewDeploymentController(s.kubeClient)
+							// Start informers again. This fixes the case where informers for namespace do not start,
+							// as we create them only after acquiring the leader lock
+							// Note: stop here should be the overall pilot stop, NOT the leader election stop. We are
+							// basically lazy loading the informer, if we stop it when we lose the lock we will never
+							// recreate it again.
+							s.kubeClient.RunAndWait(stop)
+							controller.Run(leaderStop)
+						}
+					}).
+					Run(stop)
+				return nil
+			})
+		}
+	}
+	if features.EnableAnalysis {
+		s.initInprocessAnalysisController(args)
+	}
+	s.RWConfigStore, err = configaggregate.MakeWriteableCache(s.ConfigStores, configController)
+
+	s.XDSServer.WorkloadEntryController = workloadentry.NewController(configController, args.PodName, args.KeepaliveOptions.MaxServerConnectionAge)
+	return nil
+}
+```
