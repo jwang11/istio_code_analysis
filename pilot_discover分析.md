@@ -1,10 +1,18 @@
 # pilot_discover分析
 
-其中 Server 为 pilot-discovery 的主服务，包含了三个比较重要的组件：
+Istio 控制面组件 pilot-discovery 主要接受两类输入数据，然后按照一定逻辑输出一类数据。
+输入数据
+- config：istio 中的一些配置，比如虚拟服务，目标规则等规则。由 configcontroller 处理。
+- service：相当于注册中心，存放了服务和实例，由 servciecontroller 处理。
+
+输出数据
+- xds: 生成envoy配置，下发给Proxy。由xds server处理。
+
+源码中，Server为pilot-discovery的主服务，对应包含了三个重要组件：
 
 - Config Controller：从不同来源接收流量控制和路由规则等 Istio 的配置，并响应各类事件。
 - Service Controller：从不同注册中心同步服务及实例，并响应各类事件。
-- EnvoyXdsServer：核心的 xDS 协议推送服务，根据上面组件的数据生成 xDS 协议并下发。
+- EnvoyXdsServer：核心的xDS协议推送服务，根据上面组件的数据生成 xDS 协议并下发。
 
 Config Controller 比较核心的就是对接 Kubernetes，从 kube-apiserver 中 Watch 集群中的 VirtualService、ServiceEntry、DestinationRules 等配置信息，有变化则生成 PushRequest 推送至 EnvoyXdsServer 中的推送队列。除此之外，还支持对接 MCP(Mesh Configuration Protocol) 协议的 gRPC Server，如 Nacos 的 MCP 服务等，只需要在 meshconfig 中配置 configSources 即可。最后一种是基于内存的 Config Controller 实现，通过 Watch 一个文件目录，加载目录中的 yaml 文件生成配置数据，主要用来测试。
 
