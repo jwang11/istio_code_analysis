@@ -52,8 +52,8 @@ Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main�
 监听来自Config Controller的配置变化消息和来自Service Controller的服务变化消息，并将配置和服务变化内容通过xDS接口推送到Envoy。
 （备注：目前Pilot未实现增量变化推送，每次变化推送的是全量配置，在网格中服务较多的情况下可能会有性能问题）。
 
-|| istio 1.8 不再 in-tree 支持 consul 作为外部注册中心：加上之前版本移除了对于euraka的支持。截止1.8，所有通过 in-tree 方式支持外部注册中心的代码彻底被移除。
-|| istio1.9 不再支持MCP的方式对接外部注册中心，改为 MCP-over-XDS的方式：新的方式虽然叫mcp over xds，但本质上没有使用之前的mcp协议。这意味着istio 1.9 中不能使用之前社区开源的一些 mcp 实现。
+>> istio 1.8不再 in-tree 支持consul作为外部注册中心：加上之前版本移除了对于euraka的支持。截止1.8，所有通过 in-tree 方式支持外部注册中心的代码彻底被移除。
+>> istio1.9不再支持MCP的方式对接外部注册中心，改为MCP-over-XDS的方式：新的方式虽然叫mcp over xds，但本质上没有使用之前的mcp协议。这意味着istio1.9中不能使用之前社区开源的一些mcp实现。
 
 ## 主程序
 ```diff
