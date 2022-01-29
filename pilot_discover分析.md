@@ -20,30 +20,33 @@ Config Controller 比较核心的就是对接 Kubernetes，从 kube-apiserver �
 
 Service Controller 目前原生支持 Kubernetes 和 Consul，注册在这些注册中心中的服务可以无缝接入 Mesh，另外一种比较特殊，就是 ServiceEntryStore，它本质是储存在 Config Controller 中的 Istio 配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
 
+
+Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main方法。main方法中创建了Discovery Server
 ![Pilot Code Structure](pilot-discovery-code-structure.svg)
 
-Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main方法。main方法中创建了Discovery Server，Discovery Server中主要包含三部分逻辑：
+- Config Controller。用于管理各种配置数据，包括用户创建的流量管理规则和策略。
 
-- Config Controller
-Config Controller用于管理各种配置数据，包括用户创建的流量管理规则和策略。Istio目前支持三种类型的Config Controller：
-
+  Istio目前支持三种类型的Config Controller：
   - Kubernetes：使用Kubernetes来作为配置数据的存储，该方式直接依附于Kubernetes强大的CRD机制来存储配置数据，简单方便，是Istio最开始使用的配置存储方案。
-  - MCP (Mesh Configuration Protocol)：使用Kubernetes来存储配置数据导致了Istio和Kubernetes的耦合，限制了Istio在非Kubernetes环境下的运用。为了解决该耦合，Istio社区提出了MCP，MCP定义了一个向Istio控制面下发配置数据的标准协议，Istio Pilot作为MCP Client，任何实现了MCP协议的Server都可以通过MCP协议向Pilot下发配置，从而解除了Istio和Kubernetes的耦合。如果想要了解更多关于MCP的内容，请参考文后的链接。
-  - Memory：一个在内存中的Config Controller实现，主要用于测试。
-目前Istio的配置包括：
-- Virtual Service: 定义流量路由规则。
+  - MCP (Mesh Configuration Protocol)：使用Kubernetes来存储配置数据导致了Istio和Kubernetes的耦合，限制了Istio在非Kubernetes环境下的运用。为了解决该耦合，Istio社区提出了MCP，MCP定义了一个向Istio控制面下发配置数据的标准协议，Istio Pilot作为MCP Client，任何实现了MCP协议的Server都可以通过MCP协议向Pilot下发配置，从而解除了Istio和Kubernetes的耦合。
+  - Memory：一个在内存中的Config Controller实现，主要用于测试.
+
+  目前Istio的配置包括：
+  - Virtual Service: 定义流量路由规则。
   - Destination Rule: 定义和一个服务或者subset相关的流量处理规则，包括负载均衡策略，连接池大小，断路器设置，subset定义等等。
   - Gateway: 定义入口网关上对外暴露的服务。
   - Service Entry: 通过定义一个Service Entry可以将一个外部服务手动添加到服务网格中。
   - Envoy Filter: 通过Pilot在Envoy的配置中添加一个自定义的Filter。
-  - Service Controller
-  - Service Controller用于管理各种Service Registry，提出服务发现数据，目前Istio支持的Service Registry包括：
-    - Kubernetes：对接Kubernetes Registry，可以将Kubernetes中定义的Service和Instance采集到Istio中。
-    - Consul： 对接Consul Catalog，将Consul中定义的Service采集到Istio中。
-    - MCP： 和MCP config controller类似，从MCP Server中获取Service和Service Instance。
-    - Memory： 一个内存中的Service Controller实现，主要用于测试。
-    - Discovery Service
 
+- Service Controller。用于管理各种Service Registry，提出服务发现数据。
+
+  目前Istio支持的Service Registry包括：
+  - Kubernetes：对接Kubernetes Registry，可以将Kubernetes中定义的Service和Instance采集到Istio中。
+  - Consul： 对接Consul Catalog，将Consul中定义的Service采集到Istio中。
+  - MCP： 和MCP config controller类似，从MCP Server中获取Service和Service Instance。
+  - Memory： 一个内存中的Service Controller实现，主要用于测试。
+  - Discovery Service
+ 
 - Discovery Service中主要包含下述逻辑：
 
 启动gRPC Server并接收来自Envoy端的连接请求。
