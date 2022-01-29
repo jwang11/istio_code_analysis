@@ -11,21 +11,16 @@ Istio 控制面组件 pilot-discovery 主要接受两类输入数据，然后按
 - xds: 生成envoy配置，下发给Proxy。由xds server处理。
 
 源码中，Server为pilot-discovery的主服务，对应包含了三个重要组件：
-
 - Config Controller：从不同来源接收流量控制和路由规则等 Istio 的配置，并响应各类事件。
 - Service Controller：从不同注册中心同步服务及实例，并响应各类事件。
 - EnvoyXdsServer：核心的xDS协议推送服务，根据上面组件的数据生成 xDS 协议并下发。
-
-Config Controller 比较核心的就是对接 Kubernetes，从 kube-apiserver 中 Watch 集群中的 VirtualService、ServiceEntry、DestinationRules 等配置信息，有变化则生成 PushRequest 推送至 EnvoyXdsServer 中的推送队列。除此之外，还支持对接 MCP(Mesh Configuration Protocol) 协议的 gRPC Server，如 Nacos 的 MCP 服务等，只需要在 meshconfig 中配置 configSources 即可。最后一种是基于内存的 Config Controller 实现，通过 Watch 一个文件目录，加载目录中的 yaml 文件生成配置数据，主要用来测试。
-
-Service Controller 目前原生支持 Kubernetes 和 Consul，注册在这些注册中心中的服务可以无缝接入 Mesh，另外一种比较特殊，就是 ServiceEntryStore，它本质是储存在 Config Controller 中的 Istio 配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
-
 
 Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main方法。main方法中创建了Discovery Server
 ![Pilot Code Structure](pilot-discovery-code-structure.svg)
 
 - Config Controller。用于管理各种配置数据，包括用户创建的流量管理规则和策略。
-
+  比较核心的就是对接 Kubernetes，从 kube-apiserver 中 Watch 集群中的 VirtualService、ServiceEntry、DestinationRules 等配置信息，有变化则生成 PushRequest 推送至 EnvoyXdsServer 中的推送队列。除此之外，还支持对接 MCP(Mesh Configuration Protocol) 协议的 gRPC Server，如 Nacos 的 MCP 服务等，只需要在 meshconfig 中配置 configSources 即可。最后一种是基于内存的 Config Controller 实现，通过 Watch 一个文件目录，加载目录中的 yaml 文件生成配置数据，主要用来测试。
+  
   Istio目前支持三种类型的Config Controller：
   - Kubernetes：使用Kubernetes来作为配置数据的存储，该方式直接依附于Kubernetes强大的CRD机制来存储配置数据，简单方便，是Istio最开始使用的配置存储方案。
   - MCP (Mesh Configuration Protocol)：使用Kubernetes来存储配置数据导致了Istio和Kubernetes的耦合，限制了Istio在非Kubernetes环境下的运用。为了解决该耦合，Istio社区提出了MCP，MCP定义了一个向Istio控制面下发配置数据的标准协议，Istio Pilot作为MCP Client，任何实现了MCP协议的Server都可以通过MCP协议向Pilot下发配置，从而解除了Istio和Kubernetes的耦合。
@@ -40,12 +35,13 @@ Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main�
 
 - Service Controller。用于管理各种Service Registry，提出服务发现数据。
 
+目前原生支持Kubernetes和Consul，注册在这些注册中心中的服务可以无缝接入Mesh，另外一种比较特殊，就是ServiceEntryStore，它本质是储存在Config Controller中的Istio配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
+
   目前Istio支持的Service Registry包括：
   - Kubernetes：对接Kubernetes Registry，可以将Kubernetes中定义的Service和Instance采集到Istio中。
   - Consul： 对接Consul Catalog，将Consul中定义的Service采集到Istio中。
   - MCP： 和MCP config controller类似，从MCP Server中获取Service和Service Instance。
   - Memory： 一个内存中的Service Controller实现，主要用于测试。
-  - Discovery Service
  
 - Discovery Service中主要包含下述逻辑：
 
