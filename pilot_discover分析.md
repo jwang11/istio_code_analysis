@@ -33,9 +33,9 @@ Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main�
   - Service Entry: 通过定义一个Service Entry可以将一个外部服务手动添加到服务网格中。
   - Envoy Filter: 通过Pilot在Envoy的配置中添加一个自定义的Filter。
 
-- Service Controller。用于管理各种Service Registry，提出服务发现数据。
+- Service Controller。用于管理各种Service Registry，提出服务发现数据，注册在这些注册中心中的服务可以无缝接入Mesh。
 
-目前原生支持Kubernetes和Consul，注册在这些注册中心中的服务可以无缝接入Mesh，另外一种比较特殊，就是ServiceEntryStore，它本质是储存在Config Controller中的Istio配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
+
 
   目前Istio支持的Service Registry包括：
   - Kubernetes：对接Kubernetes Registry，可以将Kubernetes中定义的Service和Instance采集到Istio中。
@@ -43,6 +43,8 @@ Pilot-Discovery的入口函数为：pilot/cmd/pilot-discovery/main.go中的main�
   - MCP： 和MCP config controller类似，从MCP Server中获取Service和Service Instance。
   - Memory： 一个内存中的Service Controller实现，主要用于测试。
  
+   有一种Service比较特殊，就是ServiceEntryStore，它本质是储存在Config Controller中的Istio配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非Kubernetes 的原生服务同步到Istio中，纳入网格统一进行流量控制和路由，所以ServiceEntryStore也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
+   
 - Discovery Service中主要包含下述逻辑：
 
 启动gRPC Server并接收来自Envoy端的连接请求。
