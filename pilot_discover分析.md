@@ -1,6 +1,8 @@
 # pilot_discover分析
 
 Istio 控制面组件 pilot-discovery 主要接受两类输入数据，然后按照一定逻辑输出一类数据。
+![Pilot Input/Output](pilot-input-output.svg)
+
 输入数据
 - config：istio 中的一些配置，比如虚拟服务，目标规则等规则。由 configcontroller 处理。
 - service：相当于注册中心，存放了服务和实例，由 servciecontroller 处理。
