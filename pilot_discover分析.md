@@ -20,6 +20,7 @@ Config Controller 比较核心的就是对接 Kubernetes，从 kube-apiserver �
 
 Service Controller 目前原生支持 Kubernetes 和 Consul，注册在这些注册中心中的服务可以无缝接入 Mesh，另外一种比较特殊，就是 ServiceEntryStore，它本质是储存在 Config Controller 中的 Istio 配置数据，但它描述的却是集群外部的服务信息。Istio 通过它将集群外部，如部署在虚拟机中的服务、非 Kubernetes 的原生服务同步到 Istio 中，纳入网格统一进行流量控制和路由，所以 ServiceEntryStore 也可以视为一种注册中心。还有一种就是 Mock Service Registry，主要用来测试。
 
+![Pilot Code Structure](pilot-discovery-code-structure.svg)
 ## 主程序
 ```diff
 func main() {
